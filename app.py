@@ -5,6 +5,7 @@ import numpy as np
 import faiss
 from fastapi.middleware.cors import CORSMiddleware
 from groq import Groq
+from pydantic import BaseModel
 import os
 
 app = FastAPI()
@@ -13,6 +14,7 @@ app = FastAPI()
 client = Groq(
     api_key=os.getenv("GROQ_API_KEY")
 )
+
 # ---------------- CORS ----------------
 app.add_middleware(
     CORSMiddleware,
@@ -22,6 +24,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ---------------- REQUEST MODEL ----------------
+class QueryRequest(BaseModel):
+    question: str
+
 # ---------------- STEP 1: LOAD PDFs ----------------
 files = ["DBMS-RAG.pdf", "OS-RAG.pdf", "data.pdf"]
 
@@ -29,8 +35,10 @@ text = ""
 
 for file in files:
     reader = PdfReader(file)
+
     for page in reader.pages:
         content = page.extract_text()
+
         if content:
             text += content
 
@@ -49,17 +57,29 @@ print(f"✅ RAG system ready with {len(chunks)} chunks")
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
 embeddings = model.encode(chunks)
+
 embedding_array = np.array(embeddings).astype("float32")
 
 # ---------------- STEP 4: FAISS ----------------
 dimension = embedding_array.shape[1]
+
 index = faiss.IndexFlatL2(dimension)
+
 index.add(embedding_array)
 
 # ---------------- STEP 5: SMALL TALK FILTER ----------------
 def is_small_talk(q):
+
     q = q.lower()
-    small_words = ["hi", "hello", "thanks", "thank you", "bye"]
+
+    small_words = [
+        "hi",
+        "hello",
+        "thanks",
+        "thank you",
+        "bye"
+    ]
+
     return any(word in q for word in small_words)
 
 # ---------------- STEP 6: GENERATE ANSWER ----------------
@@ -95,7 +115,7 @@ Answer:
     try:
 
         response = client.chat.completions.create(
-            model="llama3-8b-8192",
+            model="llama-3.1-8b-instant",
             messages=[
                 {
                     "role": "user",
@@ -112,47 +132,62 @@ Answer:
         return f"Error: {str(e)}"
 
 # ---------------- STEP 7: API ROUTE ----------------
-@app.get("/ask")
-def ask(q: str):
+@app.post("/ask")
+def ask(data: QueryRequest):
 
-    # ✅ FIRST: handle small talk
+    q = data.question
+
+    # ---------------- SMALL TALK ----------------
     if is_small_talk(q):
+
         return {
             "question": q,
             "answer": "You're welcome 😊! Ask me anything about your documents."
         }
 
-    # 🔹 Convert query to embedding
+    # ---------------- QUERY EMBEDDING ----------------
     query_embedding = model.encode([q]).astype("float32")
 
-    # 🔹 Search FAISS
+    # ---------------- FAISS SEARCH ----------------
     k = 5
+
     distances, indices = index.search(query_embedding, k)
 
-    # 🔹 IMPROVED FILTERING
+    # ---------------- FILTER RELEVANT CHUNKS ----------------
     threshold = 1.5
 
     filtered_chunks = []
 
     for idx, dist in zip(indices[0], distances[0]):
+
         if dist < threshold:
             filtered_chunks.append(chunks[idx])
 
-    # 🔹 If nothing relevant
+    # ---------------- IF NO RELEVANT DATA ----------------
     if not filtered_chunks:
+
+        general_answer = generate_answer([], q)
+
         return {
             "question": q,
-            "answer": "I couldn't find relevant information in your documents. But here's a general answer:\n\n" + generate_answer([], q)
+            "answer": "I couldn't find relevant information in your documents.\n\n" + general_answer
         }
 
-    # 🔹 LIMIT CONTEXT SIZE
+    # ---------------- LIMIT CHUNKS ----------------
     filtered_chunks = filtered_chunks[:3]
 
-    # 🔹 Generate answer
+    # ---------------- GENERATE FINAL ANSWER ----------------
     answer = generate_answer(filtered_chunks, q)
 
     return {
         "question": q,
         "answer": answer,
         "sources": filtered_chunks
+    }
+
+# ---------------- ROOT ROUTE ----------------
+@app.get("/")
+def root():
+    return {
+        "message": "RAG Backend Running Successfully 🚀"
     }
