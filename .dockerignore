@@ -1,0 +1,18 @@
+# Docker ignore for backend
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+.git/
+.gitignore
+.dockerignore
+*.tar.gz
+frontend/
+.env
+.env.local
+.vscode/
+.idea/
